@@ -113,183 +113,151 @@ GENERATING PDF EXPORT INSTANCES IN BULK
 ========================================
 */
 
+// Define Failure interface at file scope, not inside main()
+interface Failure {
+  company: string;
+  period: string;
+  periodLabel: string;
+  error: string;
+}
+
 // Wrap the code in an async function
 async function main() {
-  // Get all companies
-  const companies = await instance.get("/companies");
+  // Initialize variables for pagination
+  let allCompaniesData: any[] = [];
+  let currentPage = 1;
+  const perPage = 10;
+  let hasMorePages = true;
 
-  const companiesData = companies.data;
-  const totalCompanies = companiesData.length;
+  console.log("⏳ Fetching all companies in batches...");
+
+  // Fetch all companies with pagination
+  while (hasMorePages) {
+    console.log(`⏳ Fetching companies page ${currentPage}...`);
+
+    const companiesResponse = await instance.get("/companies", {
+      params: {
+        page: currentPage,
+        per_page: perPage,
+      },
+    });
+
+    const pageCompanies = companiesResponse.data;
+
+    if (pageCompanies.length > 0) {
+      allCompaniesData = [...allCompaniesData, ...pageCompanies];
+      console.log(
+        `✅ Fetched ${pageCompanies.length} companies from page ${currentPage}`
+      );
+      currentPage++;
+    } else {
+      hasMorePages = false;
+      console.log("✅ All companies fetched successfully");
+    }
+  }
+
+  const totalCompanies = allCompaniesData.length;
+  console.log(`⏳ Processing ${totalCompanies} companies in total...`);
+
   let processedCompanies = 0;
   let totalPdfsGenerated = 0;
 
   // Track failures
-  interface Failure {
-    company: string;
-    period: string;
-    periodLabel: string;
-    error: string;
-  }
-
   const failures: Failure[] = [];
 
-  console.log(`⏳ Processing ${totalCompanies} companies...`);
+  // Process companies in sequential batches
+  const batchSize = 10;
 
-  const pdfExportPromises = companiesData.map(async (company, index) => {
-    // Get the ledger id for the period from the last closed bookyear
+  // Process companies in sequential batches instead of all at once
+  for (let i = 0; i < allCompaniesData.length; i += batchSize) {
+    const batch = allCompaniesData.slice(i, i + batchSize);
     console.log(
-      `⏳ [${index + 1}/${totalCompanies}] Processing company: ${company.name}`
+      `⏳ Processing batch ${Math.floor(i / batchSize) + 1}/${Math.ceil(
+        allCompaniesData.length / batchSize
+      )} (companies ${i + 1}-${Math.min(
+        i + batchSize,
+        allCompaniesData.length
+      )})`
     );
 
-    const periods = await instance.get(
-      `/companies/${company.id}/periods?per_page=200`
-    );
+    // Process this batch in parallel
+    const batchPromises = batch.map(async (company, batchIndex) => {
+      const index = i + batchIndex;
+      console.log(
+        `⏳ [${index + 1}/${totalCompanies}] Processing company: ${
+          company.name
+        }`
+      );
 
-    const periodsData = periods.data;
+      const periods = await instance.get(
+        `/companies/${company.id}/periods?per_page=200`
+      );
 
-    // Find the last closed period (most recent fiscal year end)
-    const lastClosedPeriod = periodsData.find(
-      (period) => period.end_date === period.fiscal_year.end_date
-    );
+      const periodsData = periods.data;
 
-    if (!lastClosedPeriod) {
-      console.log(`❌ No matching period found for company ${company.name}`);
-      return;
-    }
+      // Find the last closed period (most recent fiscal year end)
+      const lastClosedPeriod = periodsData.find(
+        (period) => period.end_date === period.fiscal_year.end_date
+      );
 
-    // Find the second last closed period (previous fiscal year end)
-    // Filter out the first match (lastClosedPeriod) and find the next match
-    const secondLastClosedPeriod = periodsData.filter(
-      (period) =>
-        period.end_date === period.fiscal_year.end_date &&
-        period.id !== lastClosedPeriod.id
-    )[0];
-    // Generate PDFs for both periods concurrently
-    const pdfPromises: Promise<void>[] = [];
+      if (!lastClosedPeriod) {
+        console.log(`❌ No matching period found for company ${company.name}`);
+        return;
+      }
 
-    // Add the most recent period to the promises
-    pdfPromises.push(
-      generateAndSavePdf(
-        company,
-        lastClosedPeriod,
-        "laatst_afgesloten_boekjaar"
-      )
-    );
+      // Find the second last closed period (previous fiscal year end)
+      // Filter out the first match (lastClosedPeriod) and find the next match
+      const secondLastClosedPeriod = periodsData.filter(
+        (period) =>
+          period.end_date === period.fiscal_year.end_date &&
+          period.id !== lastClosedPeriod.id
+      )[0];
+      // Generate PDFs for both periods concurrently
+      const pdfPromises: Promise<void>[] = [];
 
-    // Add the second period to the promises if it exists
-    if (secondLastClosedPeriod) {
+      // Create a stats object
+      const stats = {
+        processedCompanies,
+        totalCompanies,
+        totalPdfsGenerated,
+        failures,
+      };
+
+      // Add the most recent period to the promises
       pdfPromises.push(
         generateAndSavePdf(
           company,
-          secondLastClosedPeriod,
-          "voorafgaande_boekjaar"
+          lastClosedPeriod,
+          "laatst_afgesloten_boekjaar",
+          stats
         )
       );
-    }
 
-    // Wait for all PDF generation to complete
-    await Promise.all(pdfPromises);
-
-    // Update progress after company is processed
-    processedCompanies++;
-    console.log(
-      `✔️ [${processedCompanies}/${totalCompanies}] Completed company: ${company.name}`
-    );
-  });
-
-  // Helper function to generate and save PDF
-  async function generateAndSavePdf(company, period, periodLabel) {
-    const pdfsInProgress = ++totalPdfsGenerated;
-    console.log(
-      `⏳ [${processedCompanies}/${totalCompanies}] [PDF ${pdfsInProgress}] Generating PDF for ${company.name}, period ${period.end_date} (${periodLabel})...`
-    );
-
-    try {
-      const createdPdfExport = await instance.post(
-        `/companies/${company.id}/periods/${period.id}/export_pdf_instances`,
-        {
-          title: `Full export - ${company.name} - ${period.end_date}`,
-          export_pdf_id: exportPdfId,
-        }
-      );
-
-      // Poll the PDF export instance until it's ready
-      let pdfExportInstance;
-      let attempts = 0;
-      const maxAttempts = 60;
-
-      while (attempts < maxAttempts) {
-        attempts++;
-        pdfExportInstance = await instance.get(
-          `/companies/${company.id}/periods/${period.id}/export_pdf_instances/${createdPdfExport.data.id}`
-        );
-
-        if (pdfExportInstance.data.state === "created") {
-          break;
-        }
-
-        if (pdfExportInstance.data.state === "error") {
-          throw new Error(
-            `❌ PDF generation failed for ${company.name}, period ${period.end_date}: ${pdfExportInstance.data.processing_error}`
-          );
-        }
-
-        await new Promise((resolve) => setTimeout(resolve, 2000));
-      }
-
-      if (attempts >= maxAttempts) {
-        throw new Error(
-          `❌ PDF generation timed out after ${maxAttempts} polling attempts for ${company.name}`
+      // Add the second period to the promises if it exists
+      if (secondLastClosedPeriod) {
+        pdfPromises.push(
+          generateAndSavePdf(
+            company,
+            secondLastClosedPeriod,
+            "voorafgaande_boekjaar",
+            stats
+          )
         );
       }
 
-      // Download and save locally the PDF export instances
-      const pdfExportInstanceData = pdfExportInstance.data;
+      // Wait for all PDF generation to complete
+      await Promise.all(pdfPromises);
 
-      // The property is download_url, not url
-      const pdfExportInstanceUrl = pdfExportInstanceData.download_url;
-
-      // Make sure we're using the full URL if it's a relative path
-      const fullUrl = pdfExportInstanceUrl.startsWith("/")
-        ? `${baseUrl}${pdfExportInstanceUrl}`
-        : pdfExportInstanceUrl;
-
-      // Set responseType to arraybuffer to get binary data
-      const pdfExportInstanceResponse = await instance.get(fullUrl, {
-        responseType: "arraybuffer",
-      });
-
-      // Generate a filename based on company name and period
-      const sanitizedCompanyName = company.name
-        .replace(/[^a-z0-9]/gi, "_")
-        .toLowerCase();
-      const fileName = `full_export_${sanitizedCompanyName}_${period.end_date}_${periodLabel}.pdf`;
-      const filePath = path.join(folderName, fileName);
-
-      // Save the PDF file
-      fs.writeFileSync(filePath, Buffer.from(pdfExportInstanceResponse.data));
-
+      // Update progress after company is processed
+      processedCompanies++;
       console.log(
-        `✔️ [${processedCompanies}/${totalCompanies}] [PDF ${pdfsInProgress}] Saved PDF to: ${filePath}`
+        `✔️ [${processedCompanies}/${totalCompanies}] Completed company: ${company.name}`
       );
-    } catch (error) {
-      console.error(
-        `Error generating PDF for ${company.name}, period ${period.end_date}: ${error.message}`
-      );
-      // Record the failure
-      failures.push({
-        company: company.name,
-        period: period.end_date,
-        periodLabel,
-        error: error.message,
-      });
-      // Continue with the next company rather than halting everything
-      return;
-    }
-  }
+    });
 
-  // Wait for all promises to resolve
-  await Promise.all(pdfExportPromises);
+    // Wait for all promises in the batch to resolve
+    await Promise.all(batchPromises);
+  }
 
   console.log(
     `✅ All processing complete: ${processedCompanies}/${totalCompanies} companies processed, ${totalPdfsGenerated} PDFs generated`
@@ -302,6 +270,114 @@ async function main() {
     console.log(`Total failures: ${failures.length}`);
   } else {
     console.log("🎉 All PDFs generated successfully!");
+  }
+}
+
+// Helper function to generate and save PDF
+async function generateAndSavePdf(
+  company,
+  period,
+  periodLabel,
+  stats: {
+    processedCompanies: number;
+    totalCompanies: number;
+    totalPdfsGenerated: number;
+    failures: Failure[];
+  }
+) {
+  const pdfsInProgress = ++stats.totalPdfsGenerated;
+  console.log(
+    `⏳ [${stats.processedCompanies}/${stats.totalCompanies}] [PDF ${pdfsInProgress}] Generating PDF for ${company.name}, period ${period.end_date} (${periodLabel})...`
+  );
+
+  try {
+    const createdPdfExport = await instance.post(
+      `/companies/${company.id}/periods/${period.id}/export_pdf_instances`,
+      {
+        title: `Full export - ${company.name} - ${period.end_date}`,
+        export_pdf_id: exportPdfId,
+      }
+    );
+
+    // Poll the PDF export instance until it's ready
+    let pdfExportInstance;
+    let attempts = 0;
+
+    // 10 minutes = 600 seconds, with 3 seconds between attempts
+    // We need 600 / 3 = 200 attempts to cover 10 minutes
+    const maxAttempts = 200;
+    const timeBetweenAttempts = 3000;
+
+    while (attempts < maxAttempts) {
+      attempts++;
+
+      pdfExportInstance = await instance.get(
+        `/companies/${company.id}/periods/${period.id}/export_pdf_instances/${createdPdfExport.data.id}`
+      );
+
+      if (pdfExportInstance.data.state === "created") {
+        break;
+      }
+
+      if (pdfExportInstance.data.state === "error") {
+        throw new Error(
+          `❌ PDF generation failed for ${company.name}, period ${period.end_date}: ${pdfExportInstance.data.processing_error}`
+        );
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, timeBetweenAttempts));
+    }
+
+    if (attempts >= maxAttempts) {
+      throw new Error(
+        `❌ PDF generation timed out after ${maxAttempts} polling attempts for ${
+          company.name
+        } (${(maxAttempts * timeBetweenAttempts) / 60000} minutes)`
+      );
+    }
+
+    // Download and save locally the PDF export instances
+    const pdfExportInstanceData = pdfExportInstance.data;
+
+    // The property is download_url, not url
+    const pdfExportInstanceUrl = pdfExportInstanceData.download_url;
+
+    // Make sure we're using the full URL if it's a relative path
+    const fullUrl = pdfExportInstanceUrl.startsWith("/")
+      ? `${baseUrl}${pdfExportInstanceUrl}`
+      : pdfExportInstanceUrl;
+
+    // Set responseType to arraybuffer to get binary data
+    const pdfExportInstanceResponse = await instance.get(fullUrl, {
+      responseType: "arraybuffer",
+    });
+
+    // Generate a filename based on company name and period
+    const sanitizedCompanyName = company.name
+      .replace(/[^a-z0-9]/gi, "_")
+      .toLowerCase();
+    const fileName = `full_export_${sanitizedCompanyName}_${period.end_date}_${periodLabel}.pdf`;
+    const filePath = path.join(folderName, fileName);
+
+    // Save the PDF file
+    fs.writeFileSync(filePath, Buffer.from(pdfExportInstanceResponse.data));
+
+    console.log(
+      `✔️ [${stats.processedCompanies}/${stats.totalCompanies}] [PDF ${pdfsInProgress}] Saved PDF to: ${filePath}`
+    );
+  } catch (error) {
+    console.error(
+      `Error generating PDF for ${company.name}, period ${period.end_date}: ${error.message}`
+    );
+    // Record the failure
+    stats.failures.push({
+      company: company.name,
+      period: period.end_date,
+      periodLabel,
+      error: error.message,
+    });
+    // Continue with the next company rather than halting everything
+    return;
   }
 }
 
