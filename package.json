@@ -1,0 +1,22 @@
+{
+  "name": "bulk-export-silverfin-pdf",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "authorize": "tsx src/get-authorization-url.ts",
+    "authenticate": "tsx src/get-access-token.ts"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "tsx": "^4.19.3",
+    "xior": "^0.7.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.9"
+  }
+}

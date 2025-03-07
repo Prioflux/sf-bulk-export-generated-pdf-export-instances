@@ -44,8 +44,7 @@ if (
 
 // The export pdf id is the id of the export style that will be used to generate the PDF export instances
 // This id can be found in the URL of the export style in the Silverfin web application (e.g. https://live.getsilverfin.com/f/400047/export_configurations/100002477/edit_template_hash)
-const exportPdfId = "100002477";
-
+const exportPdfId = "99025";
 const folderName = "exports";
 
 // Create the exports directory if it doesn't exist
@@ -66,46 +65,12 @@ const defaultHeaders = {
 
 const baseUrl = "https://live.getsilverfin.com";
 
-const redirectUri = "urn:ietf:wg:oauth:2.0:oob";
-
 const instance = xior.create({
   baseURL: `${baseUrl}/api/v4/f/${SILVERFIN_FIRM_ID}`,
   headers: {
     ...defaultHeaders,
   },
 });
-
-// // Create authorization URL
-// const authorizationUrl = `https://live.getsilverfin.com/oauth/authorize?client_id=${encodeURIComponent(
-//   SF_CLIENT_ID
-// )}&redirect_uri=${encodeURIComponent(
-//   redirectUri
-// )}&response_type=code&scope=${encodeURIComponent(SF_SCOPE)}`;
-
-// console.log("authorizationUrl");
-// console.log(authorizationUrl);
-
-// Get an access token
-// xior
-//   .post(
-//     `${baseUrl}/f/${SILVERFIN_FIRM_ID}/oauth/token`,
-//     {},
-//     {
-//       params: {
-//         code: SF_AUTHORIZATION_CODE,
-//         client_id: SF_CLIENT_ID,
-//         client_secret: SF_SECRET,
-//         redirect_uri: redirectUri,
-//         grant_type: "authorization_code",
-//       },
-//     }
-//   )
-//   .then((response) => {
-//     console.log(response.data);
-//   })
-//   .catch((error) => {
-//     console.log(error);
-//   });
 
 /*
 ========================================
@@ -126,7 +91,7 @@ async function main() {
   // Initialize variables for pagination
   let allCompaniesData: any[] = [];
   let currentPage = 1;
-  const perPage = 10;
+  const perPage = 200;
   let hasMorePages = true;
 
   // Create a single stats object that will be used for all batches
@@ -169,7 +134,7 @@ async function main() {
   console.log(`⏳ Processing ${totalCompanies} companies in total...`);
 
   // Process companies in sequential batches
-  const batchSize = 10;
+  const batchSize = 20;
 
   // Process companies in sequential batches instead of all at once
   for (let i = 0; i < allCompaniesData.length; i += batchSize) {
@@ -277,7 +242,11 @@ async function main() {
   // Report on failures
   if (stats.failures.length > 0) {
     console.log("\n❌ Failed PDF generations:");
-    console.table(stats.failures);
+    stats.failures.forEach((failure) => {
+      console.log(
+        `${failure.company} (${failure.period}, ${failure.periodLabel}): ❌ ${failure.error}`
+      );
+    });
     console.log(`Total failures: ${stats.failures.length}`);
   } else {
     console.log("🎉 All PDFs generated successfully!");

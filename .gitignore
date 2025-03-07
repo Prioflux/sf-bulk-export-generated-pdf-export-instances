@@ -5,6 +5,5 @@ node_modules
 *.pdf
 *.zip
 *.csv
-*.json
 *.xlsx
 *.xls
