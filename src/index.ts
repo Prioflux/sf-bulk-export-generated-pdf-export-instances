@@ -123,6 +123,16 @@ async function main() {
   let processedCompanies = 0;
   let totalPdfsGenerated = 0;
 
+  // Track failures
+  interface Failure {
+    company: string;
+    period: string;
+    periodLabel: string;
+    error: string;
+  }
+
+  const failures: Failure[] = [];
+
   console.log(`⏳ Processing ${totalCompanies} companies...`);
 
   const pdfExportPromises = companiesData.map(async (company, index) => {
@@ -194,58 +204,88 @@ async function main() {
       `⏳ [${processedCompanies}/${totalCompanies}] [PDF ${pdfsInProgress}] Generating PDF for ${company.name}, period ${period.end_date} (${periodLabel})...`
     );
 
-    const createdPdfExport = await instance.post(
-      `/companies/${company.id}/periods/${period.id}/export_pdf_instances`,
-      {
-        title: `Full export - ${company.name} - ${period.end_date}`,
-        export_pdf_id: exportPdfId,
-      }
-    );
-
-    // Poll the PDF export instance until it's ready
-    let pdfExportInstance;
-
-    while (true) {
-      pdfExportInstance = await instance.get(
-        `/companies/${company.id}/periods/${period.id}/export_pdf_instances/${createdPdfExport.data.id}`
+    try {
+      const createdPdfExport = await instance.post(
+        `/companies/${company.id}/periods/${period.id}/export_pdf_instances`,
+        {
+          title: `Full export - ${company.name} - ${period.end_date}`,
+          export_pdf_id: exportPdfId,
+        }
       );
 
-      if (pdfExportInstance.data.state === "created") {
-        break;
+      // Poll the PDF export instance until it's ready
+      let pdfExportInstance;
+      let attempts = 0;
+      const maxAttempts = 60;
+
+      while (attempts < maxAttempts) {
+        attempts++;
+        pdfExportInstance = await instance.get(
+          `/companies/${company.id}/periods/${period.id}/export_pdf_instances/${createdPdfExport.data.id}`
+        );
+
+        if (pdfExportInstance.data.state === "created") {
+          break;
+        }
+
+        if (pdfExportInstance.data.state === "error") {
+          throw new Error(
+            `❌ PDF generation failed for ${company.name}, period ${period.end_date}: ${pdfExportInstance.data.processing_error}`
+          );
+        }
+
+        await new Promise((resolve) => setTimeout(resolve, 2000));
       }
 
-      await new Promise((resolve) => setTimeout(resolve, 1000));
+      if (attempts >= maxAttempts) {
+        throw new Error(
+          `❌ PDF generation timed out after ${maxAttempts} polling attempts for ${company.name}`
+        );
+      }
+
+      // Download and save locally the PDF export instances
+      const pdfExportInstanceData = pdfExportInstance.data;
+
+      // The property is download_url, not url
+      const pdfExportInstanceUrl = pdfExportInstanceData.download_url;
+
+      // Make sure we're using the full URL if it's a relative path
+      const fullUrl = pdfExportInstanceUrl.startsWith("/")
+        ? `${baseUrl}${pdfExportInstanceUrl}`
+        : pdfExportInstanceUrl;
+
+      // Set responseType to arraybuffer to get binary data
+      const pdfExportInstanceResponse = await instance.get(fullUrl, {
+        responseType: "arraybuffer",
+      });
+
+      // Generate a filename based on company name and period
+      const sanitizedCompanyName = company.name
+        .replace(/[^a-z0-9]/gi, "_")
+        .toLowerCase();
+      const fileName = `full_export_${sanitizedCompanyName}_${period.end_date}_${periodLabel}.pdf`;
+      const filePath = path.join(folderName, fileName);
+
+      // Save the PDF file
+      fs.writeFileSync(filePath, Buffer.from(pdfExportInstanceResponse.data));
+
+      console.log(
+        `✔️ [${processedCompanies}/${totalCompanies}] [PDF ${pdfsInProgress}] Saved PDF to: ${filePath}`
+      );
+    } catch (error) {
+      console.error(
+        `Error generating PDF for ${company.name}, period ${period.end_date}: ${error.message}`
+      );
+      // Record the failure
+      failures.push({
+        company: company.name,
+        period: period.end_date,
+        periodLabel,
+        error: error.message,
+      });
+      // Continue with the next company rather than halting everything
+      return;
     }
-
-    // Download and save locally the PDF export instances
-    const pdfExportInstanceData = pdfExportInstance.data;
-
-    // The property is download_url, not url
-    const pdfExportInstanceUrl = pdfExportInstanceData.download_url;
-
-    // Make sure we're using the full URL if it's a relative path
-    const fullUrl = pdfExportInstanceUrl.startsWith("/")
-      ? `${baseUrl}${pdfExportInstanceUrl}`
-      : pdfExportInstanceUrl;
-
-    // Set responseType to arraybuffer to get binary data
-    const pdfExportInstanceResponse = await instance.get(fullUrl, {
-      responseType: "arraybuffer",
-    });
-
-    // Generate a filename based on company name and period
-    const sanitizedCompanyName = company.name
-      .replace(/[^a-z0-9]/gi, "_")
-      .toLowerCase();
-    const fileName = `full_export_${sanitizedCompanyName}_${period.end_date}_${periodLabel}.pdf`;
-    const filePath = path.join(folderName, fileName);
-
-    // Save the PDF file
-    fs.writeFileSync(filePath, Buffer.from(pdfExportInstanceResponse.data));
-
-    console.log(
-      `✔️ [${processedCompanies}/${totalCompanies}] [PDF ${pdfsInProgress}] Saved PDF to: ${filePath}`
-    );
   }
 
   // Wait for all promises to resolve
@@ -254,6 +294,15 @@ async function main() {
   console.log(
     `✅ All processing complete: ${processedCompanies}/${totalCompanies} companies processed, ${totalPdfsGenerated} PDFs generated`
   );
+
+  // Report on failures
+  if (failures.length > 0) {
+    console.log("\n❌ Failed PDF generations:");
+    console.table(failures);
+    console.log(`Total failures: ${failures.length}`);
+  } else {
+    console.log("🎉 All PDFs generated successfully!");
+  }
 }
 
 // Execute the async function
