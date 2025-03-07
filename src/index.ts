@@ -201,7 +201,23 @@ async function main() {
       );
 
       if (!lastClosedPeriod) {
-        console.log(`❌ No matching period found for company ${company.name}`);
+        console.log(
+          `❌ No matching period found for company ${company.name} - SKIPPING`
+        );
+
+        // Add to failures list
+        failures.push({
+          company: company.name,
+          period: "N/A",
+          periodLabel: "N/A",
+          error: "No matching fiscal year end period found",
+        });
+
+        // Skip to next company
+        processedCompanies++;
+        console.log(
+          `⏩ [${processedCompanies}/${totalCompanies}] Skipped company: ${company.name}`
+        );
         return;
       }
 
