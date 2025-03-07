@@ -1,5 +1,7 @@
 import xior from "xior";
 import dotenv from "dotenv";
+import fs from "fs";
+import path from "path";
 dotenv.config();
 
 // =======================================
@@ -38,6 +40,18 @@ if (
   );
 
   throw new Error("Missing required environment variables");
+}
+
+// The export pdf id is the id of the export style that will be used to generate the PDF export instances
+// This id can be found in the URL of the export style in the Silverfin web application (e.g. https://live.getsilverfin.com/f/400047/export_configurations/100002477/edit_template_hash)
+const exportPdfId = "100002477";
+
+const folderName = "exports";
+
+// Create the exports directory if it doesn't exist
+if (!fs.existsSync(folderName)) {
+  fs.mkdirSync(folderName);
+  console.log(`Created directory: ${folderName}`);
 }
 
 // =======================================
@@ -105,16 +119,25 @@ async function main() {
   const companies = await instance.get("/companies");
 
   const companiesData = companies.data;
+  const totalCompanies = companiesData.length;
+  let processedCompanies = 0;
+  let totalPdfsGenerated = 0;
 
-  console.log(`⏳ Updating ${companiesData.length} companies...`);
+  console.log(`⏳ Processing ${totalCompanies} companies...`);
 
-  const pdfExportPromises = companiesData.map(async (company) => {
-    // Get the ledger id for the period from the last closed bookyear, the periods are sorted by end_date in descending order and will by default only return 200 periods on the first page
-    const periods = await instance.get(`/companies/${company.id}/periods`);
+  const pdfExportPromises = companiesData.map(async (company, index) => {
+    // Get the ledger id for the period from the last closed bookyear
+    console.log(
+      `⏳ [${index + 1}/${totalCompanies}] Processing company: ${company.name}`
+    );
+
+    const periods = await instance.get(
+      `/companies/${company.id}/periods?per_page=200`
+    );
 
     const periodsData = periods.data;
 
-    // Find the first period where end_date matches fiscal_year.end_date
+    // Find the last closed period (most recent fiscal year end)
     const lastClosedPeriod = periodsData.find(
       (period) => period.end_date === period.fiscal_year.end_date
     );
@@ -124,23 +147,113 @@ async function main() {
       return;
     }
 
-    console.log(
-      `⏳ Generating PDF export instance for company ${company.name} from period ${lastClosedPeriod.end_date}...`
+    // Find the second last closed period (previous fiscal year end)
+    // Filter out the first match (lastClosedPeriod) and find the next match
+    const secondLastClosedPeriod = periodsData.filter(
+      (period) =>
+        period.end_date === period.fiscal_year.end_date &&
+        period.id !== lastClosedPeriod.id
+    )[0];
+    // Generate PDFs for both periods concurrently
+    const pdfPromises: Promise<void>[] = [];
+
+    // Add the most recent period to the promises
+    pdfPromises.push(
+      generateAndSavePdf(
+        company,
+        lastClosedPeriod,
+        "laatst_afgesloten_boekjaar"
+      )
     );
 
-    // Generate a PDF export instance for each company
+    // Add the second period to the promises if it exists
+    if (secondLastClosedPeriod) {
+      pdfPromises.push(
+        generateAndSavePdf(
+          company,
+          secondLastClosedPeriod,
+          "voorafgaande_boekjaar"
+        )
+      );
+    }
 
-    // Download the PDF export instances
+    // Wait for all PDF generation to complete
+    await Promise.all(pdfPromises);
 
-    // Save the PDF export instances locally
-
+    // Update progress after company is processed
+    processedCompanies++;
     console.log(
-      `✅ Successfully generated & saved PDF export instance for company ${company.name} from period ${lastClosedPeriod.end_date}`
+      `✔️ [${processedCompanies}/${totalCompanies}] Completed company: ${company.name}`
     );
   });
 
+  // Helper function to generate and save PDF
+  async function generateAndSavePdf(company, period, periodLabel) {
+    const pdfsInProgress = ++totalPdfsGenerated;
+    console.log(
+      `⏳ [${processedCompanies}/${totalCompanies}] [PDF ${pdfsInProgress}] Generating PDF for ${company.name}, period ${period.end_date} (${periodLabel})...`
+    );
+
+    const createdPdfExport = await instance.post(
+      `/companies/${company.id}/periods/${period.id}/export_pdf_instances`,
+      {
+        title: `Full export - ${company.name} - ${period.end_date}`,
+        export_pdf_id: exportPdfId,
+      }
+    );
+
+    // Poll the PDF export instance until it's ready
+    let pdfExportInstance;
+
+    while (true) {
+      pdfExportInstance = await instance.get(
+        `/companies/${company.id}/periods/${period.id}/export_pdf_instances/${createdPdfExport.data.id}`
+      );
+
+      if (pdfExportInstance.data.state === "created") {
+        break;
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+
+    // Download and save locally the PDF export instances
+    const pdfExportInstanceData = pdfExportInstance.data;
+
+    // The property is download_url, not url
+    const pdfExportInstanceUrl = pdfExportInstanceData.download_url;
+
+    // Make sure we're using the full URL if it's a relative path
+    const fullUrl = pdfExportInstanceUrl.startsWith("/")
+      ? `${baseUrl}${pdfExportInstanceUrl}`
+      : pdfExportInstanceUrl;
+
+    // Set responseType to arraybuffer to get binary data
+    const pdfExportInstanceResponse = await instance.get(fullUrl, {
+      responseType: "arraybuffer",
+    });
+
+    // Generate a filename based on company name and period
+    const sanitizedCompanyName = company.name
+      .replace(/[^a-z0-9]/gi, "_")
+      .toLowerCase();
+    const fileName = `full_export_${sanitizedCompanyName}_${period.end_date}_${periodLabel}.pdf`;
+    const filePath = path.join(folderName, fileName);
+
+    // Save the PDF file
+    fs.writeFileSync(filePath, Buffer.from(pdfExportInstanceResponse.data));
+
+    console.log(
+      `✔️ [${processedCompanies}/${totalCompanies}] [PDF ${pdfsInProgress}] Saved PDF to: ${filePath}`
+    );
+  }
+
   // Wait for all promises to resolve
   await Promise.all(pdfExportPromises);
+
+  console.log(
+    `✅ All processing complete: ${processedCompanies}/${totalCompanies} companies processed, ${totalPdfsGenerated} PDFs generated`
+  );
 }
 
 // Execute the async function
