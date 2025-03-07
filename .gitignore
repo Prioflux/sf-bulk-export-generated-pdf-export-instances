@@ -1,0 +1,10 @@
+.DS_Store
+*Zone.Identifier
+node_modules
+.env
+*.pdf
+*.zip
+*.csv
+*.json
+*.xlsx
+*.xls
