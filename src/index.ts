@@ -129,6 +129,14 @@ async function main() {
   const perPage = 10;
   let hasMorePages = true;
 
+  // Create a single stats object that will be used for all batches
+  const stats = {
+    processedCompanies: 0,
+    totalCompanies: 0,
+    totalPdfsGenerated: 0,
+    failures: [] as Failure[],
+  };
+
   console.log("⏳ Fetching all companies in batches...");
 
   // Fetch all companies with pagination
@@ -157,13 +165,8 @@ async function main() {
   }
 
   const totalCompanies = allCompaniesData.length;
+  stats.totalCompanies = totalCompanies;
   console.log(`⏳ Processing ${totalCompanies} companies in total...`);
-
-  let processedCompanies = 0;
-  let totalPdfsGenerated = 0;
-
-  // Track failures
-  const failures: Failure[] = [];
 
   // Process companies in sequential batches
   const batchSize = 10;
@@ -206,7 +209,7 @@ async function main() {
         );
 
         // Add to failures list
-        failures.push({
+        stats.failures.push({
           company: company.name,
           period: "N/A",
           periodLabel: "N/A",
@@ -214,9 +217,9 @@ async function main() {
         });
 
         // Skip to next company
-        processedCompanies++;
+        stats.processedCompanies++;
         console.log(
-          `⏩ [${processedCompanies}/${totalCompanies}] Skipped company: ${company.name}`
+          `⏩ [${stats.processedCompanies}/${stats.totalCompanies}] Skipped company: ${company.name}`
         );
         return;
       }
@@ -230,14 +233,6 @@ async function main() {
       )[0];
       // Generate PDFs for both periods concurrently
       const pdfPromises: Promise<void>[] = [];
-
-      // Create a stats object
-      const stats = {
-        processedCompanies,
-        totalCompanies,
-        totalPdfsGenerated,
-        failures,
-      };
 
       // Add the most recent period to the promises
       pdfPromises.push(
@@ -265,9 +260,9 @@ async function main() {
       await Promise.all(pdfPromises);
 
       // Update progress after company is processed
-      processedCompanies++;
+      stats.processedCompanies++;
       console.log(
-        `✔️ [${processedCompanies}/${totalCompanies}] Completed company: ${company.name}`
+        `✔️ [${stats.processedCompanies}/${stats.totalCompanies}] Completed company: ${company.name}`
       );
     });
 
@@ -276,14 +271,14 @@ async function main() {
   }
 
   console.log(
-    `✅ All processing complete: ${processedCompanies}/${totalCompanies} companies processed, ${totalPdfsGenerated} PDFs generated`
+    `✅ All processing complete: ${stats.processedCompanies}/${stats.totalCompanies} companies processed, ${stats.totalPdfsGenerated} PDFs generated`
   );
 
   // Report on failures
-  if (failures.length > 0) {
+  if (stats.failures.length > 0) {
     console.log("\n❌ Failed PDF generations:");
-    console.table(failures);
-    console.log(`Total failures: ${failures.length}`);
+    console.table(stats.failures);
+    console.log(`Total failures: ${stats.failures.length}`);
   } else {
     console.log("🎉 All PDFs generated successfully!");
   }
@@ -301,7 +296,8 @@ async function generateAndSavePdf(
     failures: Failure[];
   }
 ) {
-  const pdfsInProgress = ++stats.totalPdfsGenerated;
+  // Increment before we start the process
+  const pdfsInProgress = stats.totalPdfsGenerated++;
   console.log(
     `⏳ [${stats.processedCompanies}/${stats.totalCompanies}] [PDF ${pdfsInProgress}] Generating PDF for ${company.name}, period ${period.end_date} (${periodLabel})...`
   );
@@ -310,7 +306,7 @@ async function generateAndSavePdf(
     const createdPdfExport = await instance.post(
       `/companies/${company.id}/periods/${period.id}/export_pdf_instances`,
       {
-        title: `Full export - ${company.name} - ${period.end_date}`,
+        title: `Full export - ${period.end_date} - ${company.name}`,
         export_pdf_id: exportPdfId,
       }
     );
