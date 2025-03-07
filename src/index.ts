@@ -85,8 +85,8 @@ const instance = xior.create({
 // console.log("authorizationUrl");
 // console.log(authorizationUrl);
 
-// // Get an access token
-// instance
+// Get an access token
+// xior
 //   .post(
 //     `${baseUrl}/f/${SILVERFIN_FIRM_ID}/oauth/token`,
 //     {},
