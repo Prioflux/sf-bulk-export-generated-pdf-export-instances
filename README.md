@@ -6,7 +6,7 @@ This utility script allows you to generate and download PDF exports in bulk from
 
 - Retrieves all companies from Silverfin with pagination
 - Processes companies in batches to avoid overwhelming the API
-- Generates PDFs for the last two available fiscal years for each company
+- Generates PDFs for the available closing periods of the bookyear for each company
 - Downloads and saves PDFs locally
 - Provides detailed progress tracking and error reporting
 - Handles timeouts and errors gracefully
@@ -38,13 +38,15 @@ SF_AUTHORIZATION_CODE=your_authorazation_code_from_the_url
 SILVERFIN_TOKEN=your_access_token_generated_from_the_endpoint
 ```
 
-4. Edit the `exportPdfId` in the script to match your desired export style:
+4. Add the `EXPORT_PDF_ID` to the `.env` file for the desired export style from the Silverfin URL:
 
-```typescript
-const exportPdfId = "100002477"; // Replace with your export template ID:
+This is the URL that you can find on Silverfin: https://live.getsilverfin.com/f/${SILVERFIN_FIRM_ID}/export_configurations/${EXPORT_PDF_ID}/edit_template_hash
+
+```bash
+EXPORT_PDF_ID=your_export_pdf_id
 ```
 
-5. Run the script:
+1. Run the script:
 
 ```bash
 npx ts-node src/index.ts

@@ -17,6 +17,7 @@ const {
   SILVERFIN_FIRM_ID,
   SF_AUTHORIZATION_CODE,
   SILVERFIN_TOKEN,
+  EXPORT_PDF_ID,
 } = process.env;
 
 if (
@@ -25,7 +26,8 @@ if (
   !SF_SCOPE ||
   !SILVERFIN_FIRM_ID ||
   !SF_AUTHORIZATION_CODE ||
-  !SILVERFIN_TOKEN
+  !SILVERFIN_TOKEN ||
+  !EXPORT_PDF_ID
 ) {
   const missingVars: string[] = [];
   if (!SF_CLIENT_ID) missingVars.push("SF_CLIENT_ID");
@@ -34,7 +36,7 @@ if (
   if (!SILVERFIN_FIRM_ID) missingVars.push("SILVERFIN_FIRM_ID");
   if (!SF_AUTHORIZATION_CODE) missingVars.push("SF_AUTHORIZATION_CODE");
   if (!SILVERFIN_TOKEN) missingVars.push("SILVERFIN_TOKEN");
-
+  if (!EXPORT_PDF_ID) missingVars.push("EXPORT_PDF_ID");
   console.error(
     `Missing required environment variables: ${missingVars.join(", ")}`
   );
@@ -44,7 +46,8 @@ if (
 
 // The export pdf id is the id of the export style that will be used to generate the PDF export instances
 // This id can be found in the URL of the export style in the Silverfin web application (e.g. https://live.getsilverfin.com/f/400047/export_configurations/100002477/edit_template_hash)
-const exportPdfId = "99025";
+
+const exportPdfId = process.env.EXPORT_PDF_ID;
 const folderName = "exports";
 
 // Create the exports directory if it doesn't exist
@@ -163,14 +166,14 @@ async function main() {
 
       const periodsData = periods.data;
 
-      // Find the last closed period (most recent fiscal year end)
-      const lastClosedPeriod = periodsData.find(
+      const fiscalYearEndPeriods = periodsData.filter(
         (period) => period.end_date === period.fiscal_year.end_date
       );
 
-      if (!lastClosedPeriod) {
+      // We need at least a third period to proceed
+      if (!fiscalYearEndPeriods[2]) {
         console.log(
-          `❌ No matching period found for company ${company.name} - SKIPPING`
+          `❌ No third last closing period found for company ${company.name} - SKIPPING`
         );
 
         // Add to failures list
@@ -178,7 +181,7 @@ async function main() {
           company: company.name,
           period: "N/A",
           periodLabel: "N/A",
-          error: "No matching fiscal year end period found",
+          error: `No third last closing period found`,
         });
 
         // Skip to next company
@@ -189,33 +192,64 @@ async function main() {
         return;
       }
 
-      // Find the second last closed period (previous fiscal year end)
-      // Filter out the first match (lastClosedPeriod) and find the next match
-      const secondLastClosedPeriod = periodsData.filter(
-        (period) =>
-          period.end_date === period.fiscal_year.end_date &&
-          period.id !== lastClosedPeriod.id
-      )[0];
-      // Generate PDFs for both periods concurrently
+      // Generate PDFs for the third, fourth, and fifth last periods concurrently
       const pdfPromises: Promise<void>[] = [];
 
-      // Add the most recent period to the promises
-      pdfPromises.push(
-        generateAndSavePdf(
-          company,
-          lastClosedPeriod,
-          "laatst_afgesloten_boekjaar",
-          stats
-        )
-      );
-
-      // Add the second period to the promises if it exists
-      if (secondLastClosedPeriod) {
+      // Last closed bookyear
+      if (fiscalYearEndPeriods[0]) {
         pdfPromises.push(
           generateAndSavePdf(
             company,
-            secondLastClosedPeriod,
-            "voorafgaande_boekjaar",
+            fiscalYearEndPeriods[0],
+            "eerste_laatste_boekjaar",
+            stats
+          )
+        );
+      }
+
+      // Second last bookyear
+      if (fiscalYearEndPeriods[1]) {
+        pdfPromises.push(
+          generateAndSavePdf(
+            company,
+            fiscalYearEndPeriods[1],
+            "tweede_laatste_boekjaar",
+            stats
+          )
+        );
+      }
+
+      // Third last bookyear
+      if (fiscalYearEndPeriods[2]) {
+        pdfPromises.push(
+          generateAndSavePdf(
+            company,
+            fiscalYearEndPeriods[2],
+            "derde_laatste_boekjaar",
+            stats
+          )
+        );
+      }
+
+      // Fourth last bookyear
+      if (fiscalYearEndPeriods[3]) {
+        pdfPromises.push(
+          generateAndSavePdf(
+            company,
+            fiscalYearEndPeriods[3],
+            "vierde_laatste_boekjaar",
+            stats
+          )
+        );
+      }
+
+      // Fifth last bookyear
+      if (fiscalYearEndPeriods[4]) {
+        pdfPromises.push(
+          generateAndSavePdf(
+            company,
+            fiscalYearEndPeriods[4],
+            "vijfde_laatste_boekjaar",
             stats
           )
         );
@@ -271,7 +305,11 @@ async function generateAndSavePdf(
     `⏳ [${stats.processedCompanies}/${stats.totalCompanies}] [PDF ${pdfsInProgress}] Generating PDF for ${company.name}, period ${period.end_date} (${periodLabel})...`
   );
 
+  // Define currentRequest outside try block to make it available in catch
+  let currentRequest = "initializing";
+
   try {
+    currentRequest = "creating PDF export instance";
     const createdPdfExport = await instance.post(
       `/companies/${company.id}/periods/${period.id}/export_pdf_instances`,
       {
@@ -292,6 +330,7 @@ async function generateAndSavePdf(
     while (attempts < maxAttempts) {
       attempts++;
 
+      currentRequest = "polling PDF export instance status";
       pdfExportInstance = await instance.get(
         `/companies/${company.id}/periods/${period.id}/export_pdf_instances/${createdPdfExport.data.id}`
       );
@@ -302,7 +341,7 @@ async function generateAndSavePdf(
 
       if (pdfExportInstance.data.state === "error") {
         throw new Error(
-          `❌ PDF generation failed for ${company.name}, period ${period.end_date}: ${pdfExportInstance.data.processing_error}`
+          `PDF generation failed for ${company.name}, period ${period.end_date}: ${pdfExportInstance.data.processing_error}`
         );
       }
 
@@ -311,7 +350,7 @@ async function generateAndSavePdf(
 
     if (attempts >= maxAttempts) {
       throw new Error(
-        `❌ PDF generation timed out after ${maxAttempts} polling attempts for ${
+        `PDF generation timed out after ${maxAttempts} polling attempts for ${
           company.name
         } (${(maxAttempts * timeBetweenAttempts) / 60000} minutes)`
       );
@@ -329,6 +368,7 @@ async function generateAndSavePdf(
       : pdfExportInstanceUrl;
 
     // Set responseType to arraybuffer to get binary data
+    currentRequest = "downloading PDF file";
     const pdfExportInstanceResponse = await instance.get(fullUrl, {
       responseType: "arraybuffer",
     });
@@ -341,22 +381,35 @@ async function generateAndSavePdf(
     const filePath = path.join(folderName, fileName);
 
     // Save the PDF file
+    currentRequest = "saving PDF file to disk";
     fs.writeFileSync(filePath, Buffer.from(pdfExportInstanceResponse.data));
 
     console.log(
       `✔️ [${stats.processedCompanies}/${stats.totalCompanies}] [PDF ${pdfsInProgress}] Saved PDF to: ${filePath}`
     );
   } catch (error) {
+    // Enhanced error message with request information and HTTP verb
+    const httpMethod = error.config?.method
+      ? error.config.method.toUpperCase()
+      : "unknown";
+    const errorMessage = error.response
+      ? `${httpMethod} request failed with status code ${
+          error.response.status
+        } during ${currentRequest}. URL: ${error.config?.url || "unknown"}`
+      : error.message;
+
     console.error(
-      `Error generating PDF for ${company.name}, period ${period.end_date}: ${error.message}`
+      `❌ Error generating PDF for ${company.name}, period ${period.end_date}: ${errorMessage}`
     );
-    // Record the failure
+
+    // Record the failure with enhanced error information
     stats.failures.push({
       company: company.name,
       period: period.end_date,
       periodLabel,
-      error: error.message,
+      error: errorMessage,
     });
+
     // Continue with the next company rather than halting everything
     return;
   }
